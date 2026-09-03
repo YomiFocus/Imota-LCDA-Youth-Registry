@@ -1,0 +1,6 @@
+{
+  "name": "Imota LCDA Youth Data Registration Portal",
+  "description": "Official electronic registration portal for youth data collection in Imota LCDA, Lagos State, featuring automated duplicate prevention, real-time verification, and an administrative dashboard.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
