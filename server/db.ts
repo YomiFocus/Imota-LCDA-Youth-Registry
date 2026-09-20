@@ -43,6 +43,74 @@ export interface RegistrationStats {
   topSkills: { skill: string; count: number }[];
 }
 
+export interface AdminPermissions {
+  can_view_records: boolean;
+  can_edit_records: boolean;
+  can_delete_records: boolean;
+  can_export_data: boolean;
+  can_view_audit: boolean;
+  can_view_emails: boolean;
+  can_manage_admins: boolean;
+}
+
+export const DEFAULT_ROLE_PERMISSIONS: Record<string, AdminPermissions> = {
+  super_admin: {
+    can_view_records: true,
+    can_edit_records: true,
+    can_delete_records: true,
+    can_export_data: true,
+    can_view_audit: true,
+    can_view_emails: true,
+    can_manage_admins: true,
+  },
+  admin: {
+    can_view_records: true,
+    can_edit_records: true,
+    can_delete_records: false,
+    can_export_data: true,
+    can_view_audit: false,
+    can_view_emails: true,
+    can_manage_admins: false,
+  },
+  data_officer: {
+    can_view_records: true,
+    can_edit_records: true,
+    can_delete_records: false,
+    can_export_data: false,
+    can_view_audit: false,
+    can_view_emails: false,
+    can_manage_admins: false,
+  },
+  auditor: {
+    can_view_records: true,
+    can_edit_records: false,
+    can_delete_records: false,
+    can_export_data: false,
+    can_view_audit: true,
+    can_view_emails: true,
+    can_manage_admins: false,
+  },
+};
+
+export function parseAdminPermissions(role: string, permissionsJson?: string): AdminPermissions {
+  const fallback = DEFAULT_ROLE_PERMISSIONS[role] || DEFAULT_ROLE_PERMISSIONS.admin;
+  if (!permissionsJson) return { ...fallback };
+  try {
+    const parsed = JSON.parse(permissionsJson);
+    return {
+      can_view_records: typeof parsed.can_view_records === 'boolean' ? parsed.can_view_records : fallback.can_view_records,
+      can_edit_records: typeof parsed.can_edit_records === 'boolean' ? parsed.can_edit_records : fallback.can_edit_records,
+      can_delete_records: typeof parsed.can_delete_records === 'boolean' ? parsed.can_delete_records : fallback.can_delete_records,
+      can_export_data: typeof parsed.can_export_data === 'boolean' ? parsed.can_export_data : fallback.can_export_data,
+      can_view_audit: typeof parsed.can_view_audit === 'boolean' ? parsed.can_view_audit : fallback.can_view_audit,
+      can_view_emails: typeof parsed.can_view_emails === 'boolean' ? parsed.can_view_emails : fallback.can_view_emails,
+      can_manage_admins: typeof parsed.can_manage_admins === 'boolean' ? parsed.can_manage_admins : fallback.can_manage_admins,
+    };
+  } catch (e) {
+    return { ...fallback };
+  }
+}
+
 // Persist the database to disk
 function persistDatabase() {
   if (!db) return;
@@ -107,8 +175,15 @@ export async function initDatabase(): Promise<Database> {
       email TEXT NOT NULL UNIQUE,
       password_hash TEXT NOT NULL,
       full_name TEXT NOT NULL,
+      organization TEXT DEFAULT 'Imota Local Council',
       role TEXT NOT NULL DEFAULT 'admin',
-      created_at TEXT NOT NULL
+      permissions TEXT,
+      status TEXT NOT NULL DEFAULT 'active',
+      token_version INTEGER NOT NULL DEFAULT 1,
+      created_by TEXT DEFAULT 'system',
+      created_at TEXT NOT NULL,
+      updated_at TEXT,
+      last_login TEXT
     );
 
     CREATE TABLE IF NOT EXISTS email_dispatches (
@@ -128,10 +203,32 @@ export async function initDatabase(): Promise<Database> {
       action TEXT NOT NULL,
       target_id TEXT,
       details TEXT,
+      admin_id INTEGER,
+      admin_email TEXT,
       ip_address TEXT,
       created_at TEXT NOT NULL
     );
   `);
+
+  // Schema migrations for existing databases to guarantee zero disruption to existing data
+  const migrations = [
+    "ALTER TABLE admin_users ADD COLUMN organization TEXT DEFAULT 'Imota Local Council';",
+    "ALTER TABLE admin_users ADD COLUMN permissions TEXT;",
+    "ALTER TABLE admin_users ADD COLUMN status TEXT NOT NULL DEFAULT 'active';",
+    "ALTER TABLE admin_users ADD COLUMN token_version INTEGER NOT NULL DEFAULT 1;",
+    "ALTER TABLE admin_users ADD COLUMN created_by TEXT DEFAULT 'system';",
+    "ALTER TABLE admin_users ADD COLUMN updated_at TEXT;",
+    "ALTER TABLE admin_users ADD COLUMN last_login TEXT;",
+    "ALTER TABLE audit_logs ADD COLUMN admin_id INTEGER;",
+    "ALTER TABLE audit_logs ADD COLUMN admin_email TEXT;",
+  ];
+  for (const sql of migrations) {
+    try {
+      db.run(sql);
+    } catch (e) {
+      // Column may already exist
+    }
+  }
 
   // Create indexes for high-speed queries and duplicate checks
   db.run(`
@@ -142,30 +239,33 @@ export async function initDatabase(): Promise<Database> {
   `);
 
   // Seed default admin accounts
-  const defaultPassword = process.env.ADMIN_PASSWORD || 'youthandsports001';
+  const defaultPassword = process.env.ADMIN_PASSWORD || 'Imotalcdayouth123';
   const hash = bcrypt.hashSync(defaultPassword, 10);
   const targetAdminEmails = [
     'youthsportsimotalcda@gmail.com',
     process.env.ADMIN_EMAIL || 'admin@imota.gov.ng',
   ];
 
+  const superAdminPermissionsJson = JSON.stringify(DEFAULT_ROLE_PERMISSIONS.super_admin);
+
   for (const adminEmail of targetAdminEmails) {
     const existing = db.exec(`SELECT COUNT(*) as count FROM admin_users WHERE email = '${adminEmail.toLowerCase()}';`);
     const count = existing[0]?.values[0]?.[0] as number;
+    const now = new Date().toISOString();
     if (count === 0) {
       const stmt = db.prepare(
-        "INSERT INTO admin_users (email, password_hash, full_name, role, created_at) VALUES (?, ?, ?, ?, ?)"
+        "INSERT INTO admin_users (email, password_hash, full_name, organization, role, permissions, status, token_version, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'active', 1, 'system', ?, ?)"
       );
-      stmt.run([adminEmail.toLowerCase(), hash, 'Imota LCDA Youth & Sports Admin', 'super_admin', new Date().toISOString()]);
+      stmt.run([adminEmail.toLowerCase(), hash, 'Imota LCDA Youth & Sports Admin', 'Imota Local Council', 'super_admin', superAdminPermissionsJson, now, now]);
       stmt.free();
       console.log(`Admin user seeded: ${adminEmail}`);
     } else {
       const stmt = db.prepare(
-        "UPDATE admin_users SET password_hash = ? WHERE email = ?"
+        "UPDATE admin_users SET password_hash = ?, role = 'super_admin', permissions = ?, status = 'active', token_version = token_version + 1 WHERE email = ?"
       );
-      stmt.run([hash, adminEmail.toLowerCase()]);
+      stmt.run([hash, superAdminPermissionsJson, adminEmail.toLowerCase()]);
       stmt.free();
-      console.log(`Admin user password synchronized: ${adminEmail}`);
+      console.log(`Admin user synchronized: ${adminEmail}`);
     }
   }
   persistDatabase();
@@ -781,21 +881,40 @@ export function getEmailDispatches(limit = 50) {
   return results;
 }
 
-// Log audit action
-export function logAudit(action: string, targetId: string, details: string, ip: string) {
+// Log audit action with administrator identity and IP
+export function logAudit(
+  action: string,
+  targetId: string,
+  details: string,
+  ip: string,
+  adminId?: number,
+  adminEmail?: string
+) {
   if (!db) return;
   const now = new Date().toISOString();
-  const stmt = db.prepare(`
-    INSERT INTO audit_logs (action, target_id, details, ip_address, created_at)
-    VALUES (?, ?, ?, ?, ?)
-  `);
-  stmt.run([action, targetId, details, ip, now]);
-  stmt.free();
+  try {
+    const stmt = db.prepare(`
+      INSERT INTO audit_logs (action, target_id, details, ip_address, created_at, admin_id, admin_email)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `);
+    stmt.run([action, targetId, details, ip, now, adminId || null, adminEmail || null]);
+    stmt.free();
+  } catch (e) {
+    // Fallback if schema not yet updated
+    try {
+      const stmt = db.prepare(`
+        INSERT INTO audit_logs (action, target_id, details, ip_address, created_at)
+        VALUES (?, ?, ?, ?, ?)
+      `);
+      stmt.run([action, targetId, details, ip, now]);
+      stmt.free();
+    } catch (innerErr) {}
+  }
   persistDatabase();
 }
 
-// Get audit logs
-export function getAuditLogs(limit = 50) {
+// Get audit logs with administrator tracking
+export function getAuditLogs(limit = 100) {
   if (!db) return [];
   const stmt = db.prepare("SELECT * FROM audit_logs ORDER BY id DESC LIMIT ?");
   stmt.bind([limit]);
@@ -807,25 +926,312 @@ export function getAuditLogs(limit = 50) {
   return results;
 }
 
-// Admin login verification
-export function verifyAdminLogin(email: string, passwordPlain: string) {
-  if (!db) throw new Error('Database not initialized');
-  const stmt = db.prepare("SELECT * FROM admin_users WHERE email = ?");
-  stmt.bind([email.trim().toLowerCase()]);
+// Get single admin by ID
+export function getAdminById(id: number) {
+  if (!db) return null;
+  const stmt = db.prepare("SELECT id, email, full_name, organization, role, permissions, status, token_version, created_by, created_at, updated_at, last_login FROM admin_users WHERE id = ?");
+  stmt.bind([id]);
   if (!stmt.step()) {
     stmt.free();
     return null;
   }
   const user = stmt.getAsObject() as any;
   stmt.free();
-
-  const isMatch = bcrypt.compareSync(passwordPlain, user.password_hash);
-  if (!isMatch) return null;
-
   return {
     id: user.id,
     email: user.email,
     full_name: user.full_name,
+    organization: user.organization || 'Imota Local Council',
     role: user.role,
+    status: user.status || 'active',
+    token_version: user.token_version || 1,
+    permissions: parseAdminPermissions(user.role, user.permissions),
+    created_by: user.created_by,
+    created_at: user.created_at,
+    updated_at: user.updated_at,
+    last_login: user.last_login,
+  };
+}
+
+// Get all admin users (for Super Admin management)
+export function getAllAdmins() {
+  if (!db) return [];
+  const stmt = db.prepare("SELECT id, email, full_name, organization, role, permissions, status, token_version, created_by, created_at, updated_at, last_login FROM admin_users ORDER BY id ASC");
+  const admins: any[] = [];
+  while (stmt.step()) {
+    const user = stmt.getAsObject() as any;
+    admins.push({
+      id: user.id,
+      email: user.email,
+      full_name: user.full_name,
+      organization: user.organization || 'Imota Local Council',
+      role: user.role,
+      status: user.status || 'active',
+      token_version: user.token_version || 1,
+      permissions: parseAdminPermissions(user.role, user.permissions),
+      created_by: user.created_by,
+      created_at: user.created_at,
+      updated_at: user.updated_at,
+      last_login: user.last_login,
+    });
+  }
+  stmt.free();
+  return admins;
+}
+
+// Create a new authorized third-party admin user
+export function createAdminUser(data: {
+  email: string;
+  passwordPlain: string;
+  full_name: string;
+  organization?: string;
+  role: string;
+  permissions?: Partial<AdminPermissions>;
+  created_by: string;
+}) {
+  if (!db) throw new Error('Database not initialized');
+  const cleanEmail = data.email.trim().toLowerCase();
+
+  const checkStmt = db.prepare("SELECT COUNT(*) as count FROM admin_users WHERE email = ?");
+  checkStmt.bind([cleanEmail]);
+  checkStmt.step();
+  const count = (checkStmt.getAsObject() as any).count;
+  checkStmt.free();
+
+  if (count > 0) {
+    const err: any = new Error('An administrator account with this email address already exists.');
+    err.status = 409;
+    throw err;
+  }
+
+  const hash = bcrypt.hashSync(data.passwordPlain.trim(), 10);
+  const fallback = DEFAULT_ROLE_PERMISSIONS[data.role] || DEFAULT_ROLE_PERMISSIONS.admin;
+  const mergedPermissions = {
+    ...fallback,
+    ...(data.permissions || {}),
+  };
+  const permissionsJson = JSON.stringify(mergedPermissions);
+  const now = new Date().toISOString();
+
+  const stmt = db.prepare(`
+    INSERT INTO admin_users (
+      email, password_hash, full_name, organization, role, permissions, status, token_version, created_by, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, 'active', 1, ?, ?, ?)
+  `);
+  stmt.run([
+    cleanEmail,
+    hash,
+    data.full_name.trim(),
+    (data.organization || 'External Partner').trim(),
+    data.role,
+    permissionsJson,
+    data.created_by,
+    now,
+    now,
+  ]);
+  stmt.free();
+  persistDatabase();
+
+  const idRes = db.exec("SELECT last_insert_rowid() as id;");
+  const newId = idRes[0]?.values[0]?.[0] as number;
+  return getAdminById(newId);
+}
+
+// Update administrator status (activate, suspend, reactivate, revoke)
+export function updateAdminStatus(
+  id: number,
+  status: 'active' | 'suspended' | 'revoked',
+  actorEmail: string
+) {
+  if (!db) throw new Error('Database not initialized');
+  const existing = getAdminById(id);
+  if (!existing) {
+    const err: any = new Error('Administrator account not found');
+    err.status = 404;
+    throw err;
+  }
+
+  if (existing.email === 'youthsportsimotalcda@gmail.com' && status !== 'active') {
+    const err: any = new Error('The primary council super administrator account cannot be deactivated.');
+    err.status = 400;
+    throw err;
+  }
+
+  const now = new Date().toISOString();
+  // Increment token_version so any issued JWT session immediately becomes invalid!
+  const stmt = db.prepare(`
+    UPDATE admin_users 
+    SET status = ?, token_version = token_version + 1, updated_at = ? 
+    WHERE id = ?
+  `);
+  stmt.run([status, now, id]);
+  stmt.free();
+  persistDatabase();
+
+  return getAdminById(id);
+}
+
+// Update administrator details, role, permissions or password
+export function updateAdminUser(
+  id: number,
+  data: {
+    full_name?: string;
+    organization?: string;
+    role?: string;
+    permissions?: Partial<AdminPermissions>;
+    passwordPlain?: string;
+  },
+  actorEmail: string
+) {
+  if (!db) throw new Error('Database not initialized');
+  const existing = getAdminById(id);
+  if (!existing) {
+    const err: any = new Error('Administrator account not found');
+    err.status = 404;
+    throw err;
+  }
+
+  const now = new Date().toISOString();
+  let permissionsJson = undefined;
+  if (data.permissions || data.role) {
+    const role = data.role || existing.role;
+    const fallback = DEFAULT_ROLE_PERMISSIONS[role] || DEFAULT_ROLE_PERMISSIONS.admin;
+    const merged = {
+      ...fallback,
+      ...(existing.permissions || {}),
+      ...(data.permissions || {}),
+    };
+    permissionsJson = JSON.stringify(merged);
+  }
+
+  let sql = 'UPDATE admin_users SET updated_at = ?';
+  const params: any[] = [now];
+
+  if (data.full_name) {
+    sql += ', full_name = ?';
+    params.push(data.full_name.trim());
+  }
+  if (data.organization !== undefined) {
+    sql += ', organization = ?';
+    params.push(data.organization.trim());
+  }
+  if (data.role) {
+    sql += ', role = ?';
+    params.push(data.role);
+  }
+  if (permissionsJson) {
+    sql += ', permissions = ?';
+    params.push(permissionsJson);
+  }
+  if (data.passwordPlain && data.passwordPlain.trim().length >= 6) {
+    sql += ', password_hash = ?, token_version = token_version + 1';
+    params.push(bcrypt.hashSync(data.passwordPlain.trim(), 10));
+  }
+
+  sql += ' WHERE id = ?';
+  params.push(id);
+
+  const stmt = db.prepare(sql);
+  stmt.run(params);
+  stmt.free();
+  persistDatabase();
+
+  return getAdminById(id);
+}
+
+// Delete administrator user
+export function deleteAdminUser(id: number, actorEmail: string) {
+  if (!db) throw new Error('Database not initialized');
+  const existing = getAdminById(id);
+  if (!existing) {
+    const err: any = new Error('Administrator account not found');
+    err.status = 404;
+    throw err;
+  }
+
+  if (existing.email === 'youthsportsimotalcda@gmail.com') {
+    const err: any = new Error('The primary council super administrator account cannot be deleted.');
+    err.status = 400;
+    throw err;
+  }
+
+  const stmt = db.prepare("DELETE FROM admin_users WHERE id = ?");
+  stmt.run([id]);
+  stmt.free();
+  persistDatabase();
+
+  return true;
+}
+
+// Admin login verification with comprehensive status checking and last_login recording
+export function verifyAdminLogin(email: string, passwordPlain: string) {
+  if (!db) throw new Error('Database not initialized');
+  const stmt = db.prepare("SELECT * FROM admin_users WHERE email = ?");
+  stmt.bind([email.trim().toLowerCase()]);
+  if (!stmt.step()) {
+    stmt.free();
+    return { success: false, reason: 'invalid_credentials', message: 'Invalid administrative credentials' };
+  }
+  const user = stmt.getAsObject() as any;
+  stmt.free();
+
+  const isMatch = bcrypt.compareSync(passwordPlain, user.password_hash);
+  if (!isMatch) {
+    return { success: false, reason: 'invalid_credentials', message: 'Invalid administrative credentials' };
+  }
+
+  // Check account status: immediately blocks suspended, revoked or inactive accounts!
+  const status = user.status || 'active';
+  if (status === 'suspended') {
+    return {
+      success: false,
+      reason: 'suspended',
+      message: 'Your administrator account has been suspended by the Super Administrator. Access denied.',
+      admin: { id: user.id, email: user.email, role: user.role }
+    };
+  }
+
+  if (status === 'revoked') {
+    return {
+      success: false,
+      reason: 'revoked',
+      message: 'Your administrator account access has been permanently revoked. Access denied.',
+      admin: { id: user.id, email: user.email, role: user.role }
+    };
+  }
+
+  if (status !== 'active') {
+    return {
+      success: false,
+      reason: 'inactive',
+      message: `Account is inactive (${status}). Access denied.`,
+      admin: { id: user.id, email: user.email, role: user.role }
+    };
+  }
+
+  // Record successful login timestamp
+  const now = new Date().toISOString();
+  try {
+    const updateStmt = db.prepare("UPDATE admin_users SET last_login = ? WHERE id = ?");
+    updateStmt.run([now, user.id]);
+    updateStmt.free();
+    persistDatabase();
+  } catch (e) {}
+
+  return {
+    success: true,
+    admin: {
+      id: user.id,
+      email: user.email,
+      full_name: user.full_name,
+      organization: user.organization || 'Imota Local Council',
+      role: user.role,
+      status: status,
+      token_version: user.token_version || 1,
+      permissions: parseAdminPermissions(user.role, user.permissions),
+      created_by: user.created_by,
+      created_at: user.created_at,
+      last_login: now,
+    },
   };
 }

@@ -22,10 +22,12 @@ import {
   X,
   PieChart,
   Layers,
+  Shield,
 } from 'lucide-react';
 import { RegistrationRecord, RegistrationStats, AdminUser } from '../types';
 import { ImotaLogo } from './ImotaLogo';
 import { calculateAge } from '../utils/ageValidation';
+import { AdminManagement } from './AdminManagement';
 
 interface AdminDashboardProps {
   token: string | null;
@@ -42,7 +44,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 }) => {
   // Login form state
   const [loginEmail, setLoginEmail] = useState('youthsportsimotalcda@gmail.com');
-  const [loginPassword, setLoginPassword] = useState('youthandsports001');
+  const [loginPassword, setLoginPassword] = useState('Imotalcdayouth123');
   const [loginError, setLoginError] = useState<string | null>(null);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
 
@@ -64,8 +66,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [editFormError, setEditFormError] = useState<string | null>(null);
   const [isUpdating, setIsUpdating] = useState(false);
 
-  // Active view tab in admin: records, stats, emails
-  const [adminTab, setAdminTab] = useState<'records' | 'analytics' | 'emails'>('records');
+  // Active view tab in admin: records, stats, emails, admins
+  const [adminTab, setAdminTab] = useState<'records' | 'analytics' | 'emails' | 'admins'>('records');
   const [emailLogs, setEmailLogs] = useState<any[]>([]);
 
   // Fetch stats and registrations
@@ -78,8 +80,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       const statsRes = await fetch('/api/admin/stats', {
         headers: { Authorization: `Bearer ${token}` },
       });
-      if (statsRes.ok) {
-        const statsData = await statsRes.json();
+      const statsData = await statsRes.json().catch(() => null);
+      if (statsRes.status === 401 || statsRes.status === 403) {
+        if (statsData?.code === 'ACCOUNT_SUSPENDED' || statsData?.code === 'ACCOUNT_REVOKED') {
+          alert(statsData.error || 'Your administrative session has been revoked.');
+          onLogout();
+          return;
+        }
+      }
+      if (statsRes.ok && statsData) {
         setStats(statsData);
       }
 
@@ -94,8 +103,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       const regRes = await fetch(`/api/admin/registrations?${params.toString()}`, {
         headers: { Authorization: `Bearer ${token}` },
       });
-      if (regRes.ok) {
-        const regData = await regRes.json();
+      const regData = await regRes.json().catch(() => null);
+      if (regRes.status === 401 || regRes.status === 403) {
+        if (regData?.code === 'ACCOUNT_SUSPENDED' || regData?.code === 'ACCOUNT_REVOKED') {
+          alert(regData.error || 'Your administrative session has been revoked.');
+          onLogout();
+          return;
+        }
+      }
+      if (regRes.ok && regData?.records) {
         setRegistrations(regData.records);
       }
 
@@ -103,8 +119,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       const emailRes = await fetch('/api/admin/emails', {
         headers: { Authorization: `Bearer ${token}` },
       });
-      if (emailRes.ok) {
-        const emailData = await emailRes.json();
+      const emailData = await emailRes.json().catch(() => null);
+      if (emailRes.ok && Array.isArray(emailData)) {
         setEmailLogs(emailData);
       }
     } catch (err) {
@@ -212,6 +228,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       const response = await fetch('/api/admin/export/excel', {
         headers: { Authorization: `Bearer ${token}` },
       });
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        alert(err.error || 'Failed to export Excel file.');
+        return;
+      }
       const blob = await response.blob();
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -232,6 +253,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       const response = await fetch('/api/admin/export/csv', {
         headers: { Authorization: `Bearer ${token}` },
       });
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        alert(err.error || 'Failed to export CSV file.');
+        return;
+      }
       const blob = await response.blob();
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -316,7 +342,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 Default credentials for evaluation:
               </p>
               <p className="text-xs font-mono text-emerald-800 mt-0.5">
-                youthsportsimotalcda@gmail.com / youthandsports001
+                youthsportsimotalcda@gmail.com / Imotalcdayouth123
               </p>
               <p className="text-[11px] text-slate-400 pt-1">
                 Portal Support: <a href="tel:+2348028514026" className="hover:text-emerald-700 hover:underline">+234 (0) 8028514026</a>, <a href="tel:+2348020992646" className="hover:text-emerald-700 hover:underline">8020992646</a> • <a href="mailto:youthsportsimotalcda@gmail.com" className="hover:text-emerald-700 hover:underline">youthsportsimotalcda@gmail.com</a>
@@ -350,7 +376,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         <div className="flex items-center gap-2">
           <button
             onClick={() => setAdminTab('records')}
-            className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors ${
+            className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors cursor-pointer ${
               adminTab === 'records' ? 'bg-emerald-700 text-white' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
             }`}
           >
@@ -359,7 +385,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
           <button
             onClick={() => setAdminTab('analytics')}
-            className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors ${
+            className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors cursor-pointer ${
               adminTab === 'analytics' ? 'bg-emerald-700 text-white' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
             }`}
           >
@@ -368,12 +394,24 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
           <button
             onClick={() => setAdminTab('emails')}
-            className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors ${
+            className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors cursor-pointer ${
               adminTab === 'emails' ? 'bg-emerald-700 text-white' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
             }`}
           >
             Email Outbox ({emailLogs.length})
           </button>
+
+          {(adminUser?.role === 'super_admin' || adminUser?.permissions?.can_manage_admins || adminUser?.permissions?.can_view_audit) && (
+            <button
+              onClick={() => setAdminTab('admins')}
+              className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors cursor-pointer flex items-center gap-1.5 ${
+                adminTab === 'admins' ? 'bg-emerald-700 text-white' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+              }`}
+            >
+              <Shield className="w-3.5 h-3.5" />
+              <span>Admin & Access Control</span>
+            </button>
+          )}
 
           <button
             onClick={onLogout}
@@ -475,23 +513,27 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
               {/* Export Buttons */}
               <div className="flex flex-wrap items-center gap-2">
-                <button
-                  onClick={handleExportExcel}
-                  className="px-3.5 py-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-300 rounded-lg text-xs font-semibold flex items-center gap-1.5 shadow-2xs transition-colors cursor-pointer"
-                  title="Export to formatted Microsoft Excel sheet"
-                >
-                  <FileSpreadsheet className="w-4 h-4 text-emerald-700" />
-                  <span>Export to Excel</span>
-                </button>
+                {(adminUser?.role === 'super_admin' || adminUser?.permissions?.can_export_data) && (
+                  <>
+                    <button
+                      onClick={handleExportExcel}
+                      className="px-3.5 py-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-300 rounded-lg text-xs font-semibold flex items-center gap-1.5 shadow-2xs transition-colors cursor-pointer"
+                      title="Export to formatted Microsoft Excel sheet"
+                    >
+                      <FileSpreadsheet className="w-4 h-4 text-emerald-700" />
+                      <span>Export to Excel</span>
+                    </button>
 
-                <button
-                  onClick={handleExportCSV}
-                  className="px-3.5 py-2 bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-300 rounded-lg text-xs font-semibold flex items-center gap-1.5 shadow-2xs transition-colors cursor-pointer"
-                  title="Export to standard CSV"
-                >
-                  <Download className="w-4 h-4 text-slate-600" />
-                  <span>Export to CSV</span>
-                </button>
+                    <button
+                      onClick={handleExportCSV}
+                      className="px-3.5 py-2 bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-300 rounded-lg text-xs font-semibold flex items-center gap-1.5 shadow-2xs transition-colors cursor-pointer"
+                      title="Export to standard CSV"
+                    >
+                      <Download className="w-4 h-4 text-slate-600" />
+                      <span>Export to CSV</span>
+                    </button>
+                  </>
+                )}
 
                 <button
                   onClick={handlePrintRecords}
@@ -503,7 +545,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
                 <button
                   onClick={loadDashboardData}
-                  className="p-2 border border-slate-200 rounded-lg hover:bg-slate-100 text-slate-600"
+                  className="p-2 border border-slate-200 rounded-lg hover:bg-slate-100 text-slate-600 cursor-pointer"
                   title="Refresh data"
                 >
                   <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} />
@@ -622,27 +664,31 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                         <div className="flex items-center justify-end gap-1.5">
                           <button
                             onClick={() => setViewingRecord(reg)}
-                            className="p-1.5 hover:bg-emerald-50 text-emerald-700 rounded transition-colors"
+                            className="p-1.5 hover:bg-emerald-50 text-emerald-700 rounded transition-colors cursor-pointer"
                             title="View Slip"
                           >
                             <Eye className="w-3.5 h-3.5" />
                           </button>
 
-                          <button
-                            onClick={() => setEditingRecord(reg)}
-                            className="p-1.5 hover:bg-blue-50 text-blue-700 rounded transition-colors"
-                            title="Edit Record"
-                          >
-                            <Edit className="w-3.5 h-3.5" />
-                          </button>
+                          {(adminUser?.role === 'super_admin' || adminUser?.permissions?.can_edit_records) && (
+                            <button
+                              onClick={() => setEditingRecord(reg)}
+                              className="p-1.5 hover:bg-blue-50 text-blue-700 rounded transition-colors cursor-pointer"
+                              title="Edit Record"
+                            >
+                              <Edit className="w-3.5 h-3.5" />
+                            </button>
+                          )}
 
-                          <button
-                            onClick={() => handleDeleteRecord(reg.id, reg.full_name)}
-                            className="p-1.5 hover:bg-rose-50 text-rose-600 rounded transition-colors"
-                            title="Delete Record"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
+                          {(adminUser?.role === 'super_admin' || adminUser?.permissions?.can_delete_records) && (
+                            <button
+                              onClick={() => handleDeleteRecord(reg.id, reg.full_name)}
+                              className="p-1.5 hover:bg-rose-50 text-rose-600 rounded transition-colors cursor-pointer"
+                              title="Delete Record"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -756,6 +802,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         </div>
       )}
 
+      {/* TAB 4: ADMIN MANAGEMENT & AUDIT */}
+      {adminTab === 'admins' && token && adminUser && (
+        <AdminManagement
+          token={token}
+          currentUser={adminUser}
+          onSessionInvalidated={onLogout}
+        />
+      )}
+
       {/* EDIT MODAL */}
       {editingRecord && (
         <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4">
@@ -829,6 +884,39 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                     }
                     className="w-full px-3 py-2 border rounded-lg"
                   />
+                </div>
+              </div>
+
+              {/* Ward and Gender Selection */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="font-bold text-slate-700 block mb-1">Ward (Imota LCDA)</label>
+                  <select
+                    value={editingRecord.ward || 'Ward A'}
+                    onChange={(e) =>
+                      setEditingRecord({ ...editingRecord, ward: e.target.value })
+                    }
+                    className="w-full px-3 py-2 border rounded-lg bg-white"
+                  >
+                    <option value="Ward A">Ward A</option>
+                    <option value="Ward B">Ward B</option>
+                    <option value="Ward C">Ward C</option>
+                    <option value="Ward D">Ward D</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="font-bold text-slate-700 block mb-1">Gender</label>
+                  <select
+                    value={editingRecord.gender}
+                    onChange={(e) =>
+                      setEditingRecord({ ...editingRecord, gender: e.target.value })
+                    }
+                    className="w-full px-3 py-2 border rounded-lg bg-white"
+                  >
+                    <option value="Male">Male</option>
+                    <option value="Female">Female</option>
+                    <option value="Other">Other</option>
+                  </select>
                 </div>
               </div>
 

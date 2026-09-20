@@ -15,6 +15,13 @@ import {
   getAuditLogs,
   verifyAdminLogin,
   logAudit,
+  getAllAdmins,
+  getAdminById,
+  createAdminUser,
+  updateAdminStatus,
+  updateAdminUser,
+  deleteAdminUser,
+  AdminPermissions,
 } from './server/db';
 import {
   normalizeFullName,
@@ -24,7 +31,7 @@ import {
   isValidDOB,
   sanitizeText,
 } from './server/validation';
-import { generateToken, requireAdminAuth, AuthRequest } from './server/auth';
+import { generateToken, requireAdminAuth, requirePermission, AuthRequest } from './server/auth';
 
 // Universal directory resolution compatible with CJS & ESM
 const currentDir = typeof __dirname !== 'undefined' ? __dirname : process.cwd();
@@ -223,27 +230,245 @@ app.post('/api/register', rateLimit(60000, 20), (req, res) => {
 });
 
 // 5. Admin Authentication: Login
-app.post('/api/admin/login', rateLimit(60000, 10), (req, res) => {
+app.post('/api/admin/login', rateLimit(60000, 15), (req, res) => {
   try {
     const { email, password } = req.body;
     if (!email || !password) {
       return res.status(400).json({ error: 'Email and password are required' });
     }
 
-    const admin = verifyAdminLogin(email, password);
-    if (!admin) {
+    const clientIp = req.ip || req.socket.remoteAddress || 'unknown';
+    const result = verifyAdminLogin(email, password);
+
+    if (!result.success) {
+      if (result.reason === 'suspended') {
+        logAudit(
+          'ADMIN_LOGIN_BLOCKED',
+          String(result.admin?.id || 0),
+          `Suspended administrator attempted login: ${email}`,
+          clientIp,
+          result.admin?.id,
+          email
+        );
+        return res.status(403).json({
+          error: result.message,
+          code: 'ACCOUNT_SUSPENDED',
+          status: 'suspended',
+        });
+      }
+
+      if (result.reason === 'revoked') {
+        logAudit(
+          'ADMIN_LOGIN_BLOCKED',
+          String(result.admin?.id || 0),
+          `Revoked administrator attempted login: ${email}`,
+          clientIp,
+          result.admin?.id,
+          email
+        );
+        return res.status(403).json({
+          error: result.message,
+          code: 'ACCOUNT_REVOKED',
+          status: 'revoked',
+        });
+      }
+
+      logAudit(
+        'ADMIN_LOGIN_FAILED',
+        'auth',
+        `Failed administrator login attempt for email: ${email}`,
+        clientIp
+      );
       return res.status(401).json({ error: 'Invalid administrative credentials' });
     }
 
-    const token = generateToken(admin);
-    const clientIp = req.ip || req.socket.remoteAddress || 'unknown';
-    logAudit('ADMIN_LOGIN', String(admin.id), `Admin logged in: ${admin.email}`, clientIp);
+    const admin = result.admin;
+    const token = generateToken({
+      id: admin.id,
+      email: admin.email,
+      full_name: admin.full_name,
+      role: admin.role,
+      token_version: admin.token_version,
+    });
+
+    logAudit(
+      'ADMIN_LOGIN',
+      String(admin.id),
+      `Administrator authenticated: ${admin.email} (Role: ${admin.role})`,
+      clientIp,
+      admin.id,
+      admin.email
+    );
 
     res.json({
       token,
       admin,
     });
   } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 5b. Get all administrators (Super Admin / can_manage_admins only)
+app.get('/api/admin/users', requireAdminAuth, requirePermission('can_manage_admins'), (req: AuthRequest, res) => {
+  try {
+    const admins = getAllAdmins();
+    const clientIp = req.ip || req.socket.remoteAddress || 'unknown';
+    logAudit('ADMIN_LIST_VIEWED', 'admin_users', 'Administrator directory viewed', clientIp, req.adminUser?.id, req.adminUser?.email);
+    res.json(admins);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 5c. Create authorized third-party administrator account
+app.post('/api/admin/users', requireAdminAuth, requirePermission('can_manage_admins'), (req: AuthRequest, res) => {
+  try {
+    const { email, password, full_name, organization, role, permissions } = req.body;
+    if (!email || !password || !full_name) {
+      return res.status(400).json({ error: 'Email, password, and full name are required.' });
+    }
+
+    if (password.length < 6) {
+      return res.status(400).json({ error: 'Password must be at least 6 characters long.' });
+    }
+
+    const creatorEmail = req.adminUser?.email || 'super_admin';
+    const newAdmin = createAdminUser({
+      email,
+      passwordPlain: password,
+      full_name,
+      organization: organization || 'External Partner / Ministry',
+      role: role || 'admin',
+      permissions,
+      created_by: creatorEmail,
+    });
+
+    const clientIp = req.ip || req.socket.remoteAddress || 'unknown';
+    logAudit(
+      'ADMIN_CREATED',
+      String(newAdmin?.id || 0),
+      `Provisioned authorized administrator: ${newAdmin?.full_name} (${newAdmin?.email}) with role: ${newAdmin?.role} [Org: ${newAdmin?.organization}]`,
+      clientIp,
+      req.adminUser?.id,
+      req.adminUser?.email
+    );
+
+    res.status(201).json({
+      success: true,
+      message: 'Authorized administrator account created successfully.',
+      admin: newAdmin,
+    });
+  } catch (err: any) {
+    if (err.status === 409) {
+      return res.status(409).json({ error: err.message });
+    }
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 5d. Update administrator status (activate, suspend, reactivate, revoke)
+app.put('/api/admin/users/:id/status', requireAdminAuth, requirePermission('can_manage_admins'), (req: AuthRequest, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const { status } = req.body;
+
+    if (!['active', 'suspended', 'revoked'].includes(status)) {
+      return res.status(400).json({ error: 'Status must be active, suspended, or revoked.' });
+    }
+
+    if (req.adminUser?.id === id && status !== 'active') {
+      return res.status(400).json({ error: 'You cannot suspend or revoke your own active administrator session.' });
+    }
+
+    const updated = updateAdminStatus(id, status, req.adminUser?.email || 'admin');
+
+    const clientIp = req.ip || req.socket.remoteAddress || 'unknown';
+    const actionType = status === 'suspended' ? 'ADMIN_SUSPENDED' : status === 'revoked' ? 'ADMIN_REVOKED' : 'ADMIN_ACTIVATED';
+    logAudit(
+      actionType,
+      String(id),
+      `Administrator account ${updated?.email} status changed to ${status.toUpperCase()} (Session tokens invalidated)`,
+      clientIp,
+      req.adminUser?.id,
+      req.adminUser?.email
+    );
+
+    res.json({
+      success: true,
+      message: `Administrator access set to ${status}. Any active sessions have been terminated.`,
+      admin: updated,
+    });
+  } catch (err: any) {
+    if (err.status) {
+      return res.status(err.status).json({ error: err.message });
+    }
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 5e. Update administrator details/permissions/password
+app.put('/api/admin/users/:id', requireAdminAuth, requirePermission('can_manage_admins'), (req: AuthRequest, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const updated = updateAdminUser(id, req.body, req.adminUser?.email || 'admin');
+
+    const clientIp = req.ip || req.socket.remoteAddress || 'unknown';
+    logAudit(
+      'ADMIN_UPDATED',
+      String(id),
+      `Administrator profile/permissions updated for ${updated?.email}`,
+      clientIp,
+      req.adminUser?.id,
+      req.adminUser?.email
+    );
+
+    res.json({
+      success: true,
+      message: 'Administrator account updated successfully.',
+      admin: updated,
+    });
+  } catch (err: any) {
+    if (err.status) {
+      return res.status(err.status).json({ error: err.message });
+    }
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 5f. Delete administrator account
+app.delete('/api/admin/users/:id', requireAdminAuth, requirePermission('can_manage_admins'), (req: AuthRequest, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (req.adminUser?.id === id) {
+      return res.status(400).json({ error: 'You cannot delete your own active administrator account.' });
+    }
+
+    const target = getAdminById(id);
+    if (!target) {
+      return res.status(404).json({ error: 'Administrator not found.' });
+    }
+
+    deleteAdminUser(id, req.adminUser?.email || 'admin');
+
+    const clientIp = req.ip || req.socket.remoteAddress || 'unknown';
+    logAudit(
+      'ADMIN_DELETED',
+      String(id),
+      `Administrator account deleted: ${target.email} (${target.full_name})`,
+      clientIp,
+      req.adminUser?.id,
+      req.adminUser?.email
+    );
+
+    res.json({
+      success: true,
+      message: 'Administrator account removed successfully.',
+    });
+  } catch (err: any) {
+    if (err.status) {
+      return res.status(err.status).json({ error: err.message });
+    }
     res.status(500).json({ error: err.message });
   }
 });
@@ -264,7 +489,7 @@ app.get('/api/admin/stats', requireAdminAuth, (req: AuthRequest, res) => {
 });
 
 // 8. Admin Registrations List with Filters & Search
-app.get('/api/admin/registrations', requireAdminAuth, (req: AuthRequest, res) => {
+app.get('/api/admin/registrations', requireAdminAuth, requirePermission('can_view_records'), (req: AuthRequest, res) => {
   try {
     const { search, startDate, endDate, ward, gender } = req.query;
     const records = getAllRegistrations({
@@ -281,7 +506,7 @@ app.get('/api/admin/registrations', requireAdminAuth, (req: AuthRequest, res) =>
 });
 
 // 9. Admin Single Registration
-app.get('/api/admin/registrations/:id', requireAdminAuth, (req: AuthRequest, res) => {
+app.get('/api/admin/registrations/:id', requireAdminAuth, requirePermission('can_view_records'), (req: AuthRequest, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     const record = getRegistrationById(id);
@@ -295,13 +520,20 @@ app.get('/api/admin/registrations/:id', requireAdminAuth, (req: AuthRequest, res
 });
 
 // 10. Admin Update Registration
-app.put('/api/admin/registrations/:id', requireAdminAuth, (req: AuthRequest, res) => {
+app.put('/api/admin/registrations/:id', requireAdminAuth, requirePermission('can_edit_records'), (req: AuthRequest, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     const updated = updateRegistration(id, req.body);
 
     const clientIp = req.ip || req.socket.remoteAddress || 'unknown';
-    logAudit('REGISTRATION_UPDATED', String(id), `Admin updated record for: ${updated.full_name}`, clientIp);
+    logAudit(
+      'REGISTRATION_UPDATED',
+      String(id),
+      `Admin updated record for: ${updated.full_name} (${updated.reg_number})`,
+      clientIp,
+      req.adminUser?.id,
+      req.adminUser?.email
+    );
 
     res.json({
       success: true,
@@ -320,7 +552,7 @@ app.put('/api/admin/registrations/:id', requireAdminAuth, (req: AuthRequest, res
 });
 
 // 11. Admin Delete Registration
-app.delete('/api/admin/registrations/:id', requireAdminAuth, (req: AuthRequest, res) => {
+app.delete('/api/admin/registrations/:id', requireAdminAuth, requirePermission('can_delete_records'), (req: AuthRequest, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     const existing = getRegistrationById(id);
@@ -331,7 +563,14 @@ app.delete('/api/admin/registrations/:id', requireAdminAuth, (req: AuthRequest, 
     deleteRegistration(id);
 
     const clientIp = req.ip || req.socket.remoteAddress || 'unknown';
-    logAudit('REGISTRATION_DELETED', String(id), `Admin deleted registration: ${existing.full_name} (${existing.reg_number})`, clientIp);
+    logAudit(
+      'REGISTRATION_DELETED',
+      String(id),
+      `Admin deleted registration: ${existing.full_name} (${existing.reg_number})`,
+      clientIp,
+      req.adminUser?.id,
+      req.adminUser?.email
+    );
 
     res.json({
       success: true,
@@ -343,9 +582,19 @@ app.delete('/api/admin/registrations/:id', requireAdminAuth, (req: AuthRequest, 
 });
 
 // 12. Admin Export to Excel (.xlsx)
-app.get('/api/admin/export/excel', requireAdminAuth, (req: AuthRequest, res) => {
+app.get('/api/admin/export/excel', requireAdminAuth, requirePermission('can_export_data'), (req: AuthRequest, res) => {
   try {
     const records = getAllRegistrations({});
+    const clientIp = req.ip || req.socket.remoteAddress || 'unknown';
+    logAudit(
+      'EXPORT_EXCEL',
+      'bulk',
+      `Exported ${records.length} registrations to Excel (.xlsx)`,
+      clientIp,
+      req.adminUser?.id,
+      req.adminUser?.email
+    );
+
     const rows = records.map((r, idx) => ({
       'S/N': idx + 1,
       'Registration No': r.reg_number,
@@ -379,9 +628,19 @@ app.get('/api/admin/export/excel', requireAdminAuth, (req: AuthRequest, res) => 
 });
 
 // 13. Admin Export to CSV
-app.get('/api/admin/export/csv', requireAdminAuth, (req: AuthRequest, res) => {
+app.get('/api/admin/export/csv', requireAdminAuth, requirePermission('can_export_data'), (req: AuthRequest, res) => {
   try {
     const records = getAllRegistrations({});
+    const clientIp = req.ip || req.socket.remoteAddress || 'unknown';
+    logAudit(
+      'EXPORT_CSV',
+      'bulk',
+      `Exported ${records.length} registrations to CSV (.csv)`,
+      clientIp,
+      req.adminUser?.id,
+      req.adminUser?.email
+    );
+
     const headers = [
       'Registration Number',
       'Full Name',
@@ -432,7 +691,7 @@ app.get('/api/admin/export/csv', requireAdminAuth, (req: AuthRequest, res) => {
 });
 
 // 14. Admin Email Dispatches log
-app.get('/api/admin/emails', requireAdminAuth, (req: AuthRequest, res) => {
+app.get('/api/admin/emails', requireAdminAuth, requirePermission('can_view_emails'), (req: AuthRequest, res) => {
   try {
     const dispatches = getEmailDispatches(100);
     res.json(dispatches);
@@ -442,7 +701,7 @@ app.get('/api/admin/emails', requireAdminAuth, (req: AuthRequest, res) => {
 });
 
 // 15. Admin Audit Trail
-app.get('/api/admin/audit', requireAdminAuth, (req: AuthRequest, res) => {
+app.get('/api/admin/audit', requireAdminAuth, requirePermission('can_view_audit'), (req: AuthRequest, res) => {
   try {
     const logs = getAuditLogs(100);
     res.json(logs);
