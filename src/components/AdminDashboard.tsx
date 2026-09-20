@@ -42,7 +42,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 }) => {
   // Login form state
   const [loginEmail, setLoginEmail] = useState('youthsportsimotalcda@gmail.com');
-  const [loginPassword, setLoginPassword] = useState('Admin@Imota2026!');
+  const [loginPassword, setLoginPassword] = useState('youthandsports001');
   const [loginError, setLoginError] = useState<string | null>(null);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
 
@@ -316,7 +316,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 Default credentials for evaluation:
               </p>
               <p className="text-xs font-mono text-emerald-800 mt-0.5">
-                youthsportsimotalcda@gmail.com / Admin@Imota2026!
+                youthsportsimotalcda@gmail.com / youthandsports001
               </p>
               <p className="text-[11px] text-slate-400 pt-1">
                 Portal Support: <a href="tel:+2348028514026" className="hover:text-emerald-700 hover:underline">+234 (0) 8028514026</a>, <a href="tel:+2348020992646" className="hover:text-emerald-700 hover:underline">8020992646</a> • <a href="mailto:youthsportsimotalcda@gmail.com" className="hover:text-emerald-700 hover:underline">youthsportsimotalcda@gmail.com</a>

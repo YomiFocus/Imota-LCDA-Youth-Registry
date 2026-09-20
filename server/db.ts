@@ -142,7 +142,7 @@ export async function initDatabase(): Promise<Database> {
   `);
 
   // Seed default admin accounts
-  const defaultPassword = process.env.ADMIN_PASSWORD || 'Admin@Imota2026!';
+  const defaultPassword = process.env.ADMIN_PASSWORD || 'youthandsports001';
   const hash = bcrypt.hashSync(defaultPassword, 10);
   const targetAdminEmails = [
     'youthsportsimotalcda@gmail.com',
@@ -159,8 +159,16 @@ export async function initDatabase(): Promise<Database> {
       stmt.run([adminEmail.toLowerCase(), hash, 'Imota LCDA Youth & Sports Admin', 'super_admin', new Date().toISOString()]);
       stmt.free();
       console.log(`Admin user seeded: ${adminEmail}`);
+    } else {
+      const stmt = db.prepare(
+        "UPDATE admin_users SET password_hash = ? WHERE email = ?"
+      );
+      stmt.run([hash, adminEmail.toLowerCase()]);
+      stmt.free();
+      console.log(`Admin user password synchronized: ${adminEmail}`);
     }
   }
+  persistDatabase();
 
   // Seed initial registrations if table is empty (includes Adebogun Oriyomi from prompt specification)
   const regCheck = db.exec("SELECT COUNT(*) as count FROM registrations;");

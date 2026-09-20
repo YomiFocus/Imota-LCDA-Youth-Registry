@@ -43,7 +43,7 @@ PORT=3000
 NODE_ENV=production
 JWT_SECRET=your_long_random_secret_key_here
 ADMIN_EMAIL=admin@imota.gov.ng
-ADMIN_PASSWORD=Admin@Imota2026!
+ADMIN_PASSWORD=youthandsports001
 ```
 
 ---
